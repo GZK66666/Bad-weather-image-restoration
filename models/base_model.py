@@ -3,6 +3,7 @@ import torch
 from collections import OrderedDict
 from abc import ABC, abstractmethod
 from . import networks
+from util import util
 
 
 class BaseModel(ABC):
@@ -39,9 +40,13 @@ class BaseModel(ABC):
         self.loss_names = []
         self.model_names = []
         self.visual_names = []
+        self.visuals = []
+        self.labels = []
         self.optimizers = []
         self.image_paths = []
         self.metric = 0  # used for learning rate policy 'plateau'
+        self.badweather_domains = opt.badweather_domains
+        self.Tensor = torch.cuda.FloatTensor if self.gpu_ids else torch.Tensor
 
     @staticmethod
     def modify_commandline_options(parser, is_train):
@@ -128,17 +133,26 @@ class BaseModel(ABC):
     def get_current_visuals(self):
         """Return visualization images. train.py will display these images with visdom, and save the images to a HTML"""
         visual_ret = OrderedDict()
-        for name in self.visual_names:
-            if isinstance(name, str):
-                visual_ret[name] = getattr(self, name)
+        if self.isTrain:
+            for name in self.visual_names:
+                if isinstance(name, str):
+                    visual_ret[name] = getattr(self, name)
+        else:
+            images =[util.tensor2im(v.data) for v in self.visuals]
+            visual_ret =OrderedDict(zip(self.labels, images))
         return visual_ret
 
     def get_current_losses(self):
         """Return traning losses / errors. train.py will print out these errors on console, and save them to a file"""
         errors_ret = OrderedDict()
+        extract = lambda l: [(i if type(i) is int or type(i) is float else i.item()) for i in l]
         for name in self.loss_names:
-            if isinstance(name, str):
-                errors_ret[name] = float(getattr(self, 'loss_' + name))  # float(...) works for both scalar tensor and float number
+            cur_loss = getattr(self, 'loss_' + name)
+            if isinstance(cur_loss, list):
+                errors_ret[name] = extract(cur_loss)
+            else:
+                errors_ret[name] = float(cur_loss)
+
         return errors_ret
 
     def save_networks(self, epoch):
@@ -149,15 +163,26 @@ class BaseModel(ABC):
         """
         for name in self.model_names:
             if isinstance(name, str):
-                save_filename = '%s_net_%s.pth' % (epoch, name)
-                save_path = os.path.join(self.save_dir, save_filename)
                 net = getattr(self, 'net' + name)
-
-                if len(self.gpu_ids) > 0 and torch.cuda.is_available():
-                    torch.save(net.module.cpu().state_dict(), save_path)
-                    net.cuda(self.gpu_ids[0])
+                if isinstance(net, list):
+                        for i in range(len(net)):
+                            save_filename = '%s_net_%s' % (epoch, name)
+                            save_filename += str(i) + '.pth'
+                            save_path = os.path.join(self.save_dir, save_filename)
+                            if len(self.gpu_ids) > 0 and torch.cuda.is_available():
+                                torch.save(net[i].module.cpu().state_dict(), save_path)
+                                net[i].cuda(self.gpu_ids[0])
+                            else:
+                                torch.save(net[i].cpu().state_dict(), save_path)
                 else:
-                    torch.save(net.cpu().state_dict(), save_path)
+                    save_filename = '%s_net_%s' % (epoch, name)
+                    save_filename += '.pth'
+                    save_path = os.path.join(self.save_dir, save_filename)
+                    if len(self.gpu_ids) > 0 and torch.cuda.is_available():
+                        torch.save(net.module.cpu().state_dict(), save_path)
+                        net.cuda(self.gpu_ids[0])
+                    else:
+                        torch.save(net.cpu().state_dict(), save_path)
 
     def __patch_instance_norm_state_dict(self, state_dict, module, keys, i=0):
         """Fix InstanceNorm checkpoints incompatibility (prior to 0.4)"""
@@ -181,22 +206,36 @@ class BaseModel(ABC):
         """
         for name in self.model_names:
             if isinstance(name, str):
-                load_filename = '%s_net_%s.pth' % (epoch, name)
-                load_path = os.path.join(self.save_dir, load_filename)
                 net = getattr(self, 'net' + name)
-                if isinstance(net, torch.nn.DataParallel):
-                    net = net.module
-                print('loading the model from %s' % load_path)
-                # if you are using PyTorch newer than 0.4 (e.g., built from
-                # GitHub source), you can remove str() on self.device
-                state_dict = torch.load(load_path, map_location=str(self.device))
-                if hasattr(state_dict, '_metadata'):
-                    del state_dict._metadata
+                if isinstance(net, list):
+                    for i in range(len(net)):
+                        load_filename = '%s_net_%s%s.pth' % (epoch, name, str(i))
+                        load_path = os.path.join(self.save_dir, load_filename)
+                        if isinstance(net[i], torch.nn.DataParallel):
+                            net[i] = net[i].module
+                        print('loading the model from %s' % load_path)
+                        state_dict = torch.load(load_path, map_location=str(self.device))
+                        if hasattr(state_dict, '_metadata'):
+                            del state_dict._metadata
+                        for key in list(state_dict.keys()):  # need to copy keys here because we mutate in loop
+                            self.__patch_instance_norm_state_dict(state_dict, net[i], key.split('.'))
+                        net[i].load_state_dict(state_dict)
+                else:
+                    load_filename = '%s_net_%s.pth' % (epoch, name)
+                    load_path = os.path.join(self.save_dir, load_filename)
+                    if isinstance(net, torch.nn.DataParallel):
+                        net = net.module
+                    print('loading the model from %s' % load_path)
+                    # if you are using PyTorch newer than 0.4 (e.g., built from
+                    # GitHub source), you can remove str() on self.device
+                    state_dict = torch.load(load_path, map_location=str(self.device))
+                    if hasattr(state_dict, '_metadata'):
+                        del state_dict._metadata
 
-                # patch InstanceNorm checkpoints prior to 0.4
-                for key in list(state_dict.keys()):  # need to copy keys here because we mutate in loop
-                    self.__patch_instance_norm_state_dict(state_dict, net, key.split('.'))
-                net.load_state_dict(state_dict)
+                    # patch InstanceNorm checkpoints prior to 0.4
+                    for key in list(state_dict.keys()):  # need to copy keys here because we mutate in loop
+                        self.__patch_instance_norm_state_dict(state_dict, net, key.split('.'))
+                    net.load_state_dict(state_dict)
 
     def print_networks(self, verbose):
         """Print the total number of parameters in the network and (if verbose) network architecture
@@ -209,11 +248,20 @@ class BaseModel(ABC):
             if isinstance(name, str):
                 net = getattr(self, 'net' + name)
                 num_params = 0
-                for param in net.parameters():
-                    num_params += param.numel()
-                if verbose:
-                    print(net)
-                print('[Network %s] Total number of parameters : %.3f M' % (name, num_params / 1e6))
+                if isinstance(net, list):
+                    for i in range(len(net)):
+                        num_params = 0
+                        for param in net[i].parameters():
+                            num_params += param.numel()
+                        if (verbose):
+                            print(net[i])
+                        print('[Network %s] Total number of parameters : %.3f M' % (name + str(i), num_params / 1e6))
+                else:
+                    for param in net.parameters():
+                        num_params += param.numel()
+                    if verbose:
+                        print(net)
+                    print('[Network %s] Total number of parameters : %.3f M' % (name, num_params / 1e6))
         print('-----------------------------------------------')
 
     def set_requires_grad(self, nets, requires_grad=False):
