@@ -198,6 +198,8 @@ def define_D(input_nc, ndf, netD, n_layers_D=3, norm='batch', init_type='normal'
         net = NLayerDiscriminator(input_nc, ndf, n_layers_D, norm_layer=norm_layer)
     elif netD == 'pixel':     # classify if each pixel is real or fake
         net = PixelDiscriminator(input_nc, ndf, norm_layer=norm_layer)
+    elif netD == 'multiscalediscriminator':
+        net = MultiscaleDiscriminator(input_nc, ndf, n_layers=3, norm_layer=norm_layer, num_D=3)
     else:
         raise NotImplementedError('Discriminator model name [%s] is not recognized' % netD)
     return init_net(net, init_type, init_gain, gpu_ids)
@@ -265,8 +267,14 @@ class GANLoss(nn.Module):
             the calculated loss.
         """
         if self.gan_mode in ['lsgan', 'vanilla']:
-            target_tensor = self.get_target_tensor(prediction, target_is_real)
-            loss = self.loss(prediction, target_tensor)
+            if isinstance(prediction, list):
+                loss = 0
+                for pred in prediction:
+                    target_tensor = self.get_target_tensor(pred, target_is_real)
+                    loss += self.loss(pred, target_tensor)
+            else:
+                target_tensor = self.get_target_tensor(prediction, target_is_real)
+                loss = self.loss(prediction, target_tensor)
         elif self.gan_mode == 'wgangp':
             if target_is_real:
                 loss = -prediction.mean()
@@ -613,3 +621,30 @@ class PixelDiscriminator(nn.Module):
     def forward(self, input):
         """Standard forward."""
         return self.net(input)
+
+
+class MultiscaleDiscriminator(nn.Module):
+
+    """定义多尺度Discriminator，使用两个不同patch_size的patchgan和一个pixelgan"""
+
+    def __init__(self, input_nc, ndf=64, n_layers=3, norm_layer=nn.BatchNorm2d, num_D=3):
+        super(MultiscaleDiscriminator, self).__init__()
+        self.num_D = num_D
+        self.n_layers = n_layers
+        for i in range(num_D):
+            netD = NLayerDiscriminator(input_nc, ndf, n_layers, norm_layer)
+            setattr(self, 'Discriminator'+str(i), netD.model)
+        self.downsample = nn.AvgPool2d(3, stride=2, padding=[1, 1], count_include_pad=False)
+
+    def singleD_forward(self, model, input):
+        return model(input)
+
+    def forward(self, input):
+        num_D = self.num_D
+        results = []
+        input_downsample = input
+        for i in range(num_D):
+            model = getattr(self, 'Discriminator' + str(i))
+            results.append(self.singleD_forward(model, input_downsample))
+            input_downsample =self.downsample(input_downsample)
+        return results
