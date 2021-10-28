@@ -35,6 +35,7 @@ class BaseModel(ABC):
         self.isTrain = opt.isTrain
         self.device = torch.device('cuda:{}'.format(self.gpu_ids[0])) if self.gpu_ids else torch.device('cpu')  # get device name: CPU or GPU
         self.save_dir = os.path.join(opt.checkpoints_dir, opt.name)  # save all the checkpoints to save_dir
+        self.pre_training_dir = os.path.join(opt.pre_training_model_dir, opt.pre_training_model_name)
         if opt.preprocess != 'scale_width':  # with [scale_width], input images might have different sizes, which hurts the performance of cudnn.benchmark.
             torch.backends.cudnn.benchmark = True
         self.loss_names = []
@@ -88,6 +89,7 @@ class BaseModel(ABC):
         """
         if self.isTrain:
             self.schedulers = [networks.get_scheduler(optimizer, opt) for optimizer in self.optimizers]
+            self.load_preTraining_networks()
         if not self.isTrain or opt.continue_train:
             load_suffix = 'iter_%d' % opt.load_iter if opt.load_iter > 0 else opt.epoch
             self.load_networks(load_suffix)
@@ -207,35 +209,53 @@ class BaseModel(ABC):
         for name in self.model_names:
             if isinstance(name, str):
                 net = getattr(self, 'net' + name)
-                if isinstance(net, list):
-                    for i in range(len(net)):
-                        load_filename = '%s_net_%s%s.pth' % (epoch, name, str(i))
-                        load_path = os.path.join(self.save_dir, load_filename)
+                if name == 'G_clean':
+                    # 加载G_clean
+                    load_filename = '%s_net_%s.pth' % (epoch, name)
+                    load_path = os.path.join(self.save_dir, load_filename)
+                    if isinstance(net, torch.nn.DataParallel):
+                        net = net.module
+                    print('loading the model from %s' % load_path)
+                    state_dict = torch.load(load_path, map_location=str(self.device))
+                    if hasattr(state_dict, '_metadata'):
+                        del state_dict._metadata
+                    for key in list(state_dict.keys()):  # need to copy keys here because we mutate in loop
+                        self.__patch_instance_norm_state_dict(state_dict, net, key.split('.'))
+                    net.load_state_dict(state_dict)
+                else :
+                    # 加载G_badweather
+                    weather = ['smallrain', 'raindrop', 'snow']
+                    for i in range(3):
+                        load_filename = 'pre_training_%s.pth' % weather[i]
+                        load_path = os.path.join(self.pre_training_dir, load_filename)
                         if isinstance(net[i], torch.nn.DataParallel):
                             net[i] = net[i].module
-                        print('loading the model from %s' % load_path)
+                        print('loading the preTraining model from %s' % load_path)
                         state_dict = torch.load(load_path, map_location=str(self.device))
                         if hasattr(state_dict, '_metadata'):
                             del state_dict._metadata
                         for key in list(state_dict.keys()):  # need to copy keys here because we mutate in loop
                             self.__patch_instance_norm_state_dict(state_dict, net[i], key.split('.'))
                         net[i].load_state_dict(state_dict)
-                else:
-                    load_filename = '%s_net_%s.pth' % (epoch, name)
-                    load_path = os.path.join(self.save_dir, load_filename)
-                    if isinstance(net, torch.nn.DataParallel):
-                        net = net.module
-                    print('loading the model from %s' % load_path)
-                    # if you are using PyTorch newer than 0.4 (e.g., built from
-                    # GitHub source), you can remove str() on self.device
-                    state_dict = torch.load(load_path, map_location=str(self.device))
-                    if hasattr(state_dict, '_metadata'):
-                        del state_dict._metadata
 
-                    # patch InstanceNorm checkpoints prior to 0.4
-                    for key in list(state_dict.keys()):  # need to copy keys here because we mutate in loop
-                        self.__patch_instance_norm_state_dict(state_dict, net, key.split('.'))
-                    net.load_state_dict(state_dict)
+
+    def load_preTraining_networks(self):
+        # 加载预训练的生成器
+        nets = getattr(self, 'netG_badweather')
+        weather = ['smallrain', 'raindrop', 'snow']
+        for i in range(3):
+            load_filename = 'pre_training_%s.pth' % weather[i]
+            load_path = os.path.join(self.pre_training_dir, load_filename)
+            if isinstance(nets[i], torch.nn.DataParallel):
+                nets[i] = nets[i].module
+            print('loading the preTraining model from %s' % load_path)
+            state_dict = torch.load(load_path, map_location=str(self.device))
+            if hasattr(state_dict, '_metadata'):
+                del state_dict._metadata
+            for key in list(state_dict.keys()):  # need to copy keys here because we mutate in loop
+                self.__patch_instance_norm_state_dict(state_dict, nets[i], key.split('.'))
+            nets[i].load_state_dict(state_dict)
+
 
     def print_networks(self, verbose):
         """Print the total number of parameters in the network and (if verbose) network architecture

@@ -32,18 +32,17 @@ class CycleGANModel(BaseModel):
         self.domain_badweather = None
 
         # specify the training losses you want to print out. The training/test scripts will call <BaseModel.get_current_losses>
-        self.loss_names = ['G_clean', 'D_clean', 'idt_clean', 'G_badweather', 'D_badweather', 'idt_badweather']
+        self.loss_names = ['G_clean', 'D_clean', 'cycle_clean', 'idt_clean', 'G_badweather', 'D_badweather', 'cycle_badweather', 'idt_badweather']
         # specify the images you want to save/display. The training/test scripts will call <BaseModel.get_current_visuals>
         visual_names_clean = ['clean', 'fake_badweather', 'rec_clean']
         visual_names_badweather = ['badweather', 'fake_clean', 'rec_badweather']
         if self.isTrain and self.opt.lambda_identity > 0.0:
                 visual_names_clean.append('idt_clean')
-                visual_names_badweather.append('idt_badweather')
 
         self.visual_names = visual_names_clean + visual_names_badweather  # combine visualizations for A and B
         # specify the models you want to save to the disk. The training/test scripts will call <BaseModel.save_networks> and <BaseModel.load_networks>.
         if self.isTrain:
-            self.model_names = ['G_clean', 'G_badweather', 'D_clean', 'D_badweather']
+            self.model_names = ['G_clean', 'D_clean']
         else:  # during test time, only load Gs
             self.model_names = ['G_clean', 'G_badweather']
 
@@ -51,6 +50,7 @@ class CycleGANModel(BaseModel):
         # netG_clean：干净背景图像生成器 netG_badweather：恶劣天气图像生成器（list，有多少个恶劣天气图像域就有多少个对应的生成器）
         self.netG_clean = networks.define_G(opt.input_nc, opt.output_nc, opt.ngf, opt.netG, opt.norm,
                                             not opt.no_dropout, opt.init_type, opt.init_gain, self.gpu_ids)
+        # 预训练网络
         self.netG_badweather = [networks.define_G(opt.input_nc, opt.output_nc, opt.ngf, opt.netG, opt.norm, not
         opt.no_dropout, opt.init_type, opt.init_gain, self.gpu_ids) for _ in range(self.badweather_domains)]
 
@@ -58,8 +58,6 @@ class CycleGANModel(BaseModel):
             # netD_clean：干净背景图像判别器 netD_badweather：恶劣天气图像生成器（list, 有多少个恶劣天气图像域就有多少个对应的生成器）
             self.netD_clean = networks.define_D(opt.output_nc, opt.ndf, opt.netD,
                                                 opt.n_layers_D, opt.norm, opt.init_type, opt.init_gain, self.gpu_ids)
-            self.netD_badweather = [networks.define_D(opt.output_nc, opt.ndf, opt.netD, opt.n_layers_D, opt.norm,
-                                                      opt.init_type, opt.init_gain, self.gpu_ids) for _ in range(self.badweather_domains)]
 
         if self.isTrain:
             if opt.lambda_identity > 0.0:  # only works when input and output images have the same number of channels
@@ -72,20 +70,9 @@ class CycleGANModel(BaseModel):
             self.criterionIdt = torch.nn.L1Loss()
             # initialize optimizers; schedulers will be automatically created by function <BaseModel.setup>.
             self.optimizer_G_clean = torch.optim.Adam(self.netG_clean.parameters(), lr=opt.lr, betas=(opt.beta1, 0.999))
-            self.optimizer_G_badwheather = [torch.optim.Adam(self.netG_badweather[i].parameters(), lr=opt.lr, betas=(opt.beta1, 0.999)) for i in range(self.badweather_domains)]
             self.optimizer_D_clean = torch.optim.Adam(self.netD_clean.parameters(), lr=opt.lr, betas=(opt.beta1, 0.999))
-            self.optimizer_D_badwheather = [torch.optim.Adam(self.netD_badweather[i].parameters(), lr=opt.lr, betas=(opt.beta1, 0.999)) for i in range(self.badweather_domains)]
             self.optimizers.append(self.optimizer_G_clean)
-            for optimizer in self.optimizer_G_badwheather:
-                self.optimizers.append(optimizer)
             self.optimizers.append(self.optimizer_D_clean)
-            for optimizer in self.optimizer_D_badwheather:
-                self.optimizers.append(optimizer)
-            # initialize loss storage
-            self.loss_G_clean, self.loss_G_badweather = 0, [0] * self.badweather_domains
-            self.loss_D_clean, self.loss_D_badweather = 0, [0] * self.badweather_domains
-            self.loss_cycle_clean, self.loss_cycle_badweather = 0, [0] * self.badweather_domains
-            self.loss_idt_clean, self.loss_idt_badweather = 0, [0] * self.badweather_domains
 
     def set_input(self, input):
         input_A = input['A']
@@ -131,11 +118,6 @@ class CycleGANModel(BaseModel):
         fake_clean = self.fake_clean_pool.query(self.fake_clean)
         self.loss_D_clean = self.backward_D_basic(self.netD_clean, self.clean, fake_clean)
 
-    def backward_D_Badweather(self):
-        """Calculate GAN loss for discriminator D_B"""
-        fake_badweather = self.fake_badweather_pools[self.domain_badweather].query(self.fake_badweather)
-        self.loss_D_badweather[self.domain_badweather] = self.backward_D_basic(self.netD_badweather[self.domain_badweather], self.badweather, fake_badweather)
-
     def backward_G(self):
         """Calculate the loss for generators G_A and G_B"""
         lambda_idt = self.opt.lambda_identity
@@ -146,25 +128,15 @@ class CycleGANModel(BaseModel):
             # G_clean should be identity if clean is fed: ||G_clean(clean) - clean||
             self.idt_clean = self.netG_clean(self.clean)
             self.loss_idt_clean = self.criterionIdt(self.idt_clean, self.clean) * lambda_B * lambda_idt
-            # G_badweather should be identity if badweather is fed: ||G_badweather(badweather) - badweather||
-            self.idt_badweather = self.netG_badweather[self.domain_badweather](self.badweather)
-            self.loss_idt_badweather[self.domain_badweather] = self.criterionIdt(self.idt_badweather, self.badweather) * lambda_A * lambda_idt
         else:
             self.loss_idt_clean = 0
-            self.loss_idt_badweather[self.domain_badweather] = 0
 
         # GAN loss D_A(G_A(A))
         self.loss_G_clean = self.criterionGAN(self.netD_clean(self.fake_clean), True)
-        # GAN loss D_B(G_B(B))
-        self.loss_G_badweather[self.domain_badweather] = self.criterionGAN(self.netD_badweather[self.domain_badweather](self.fake_badweather), True)
         # Forward cycle loss || G_B(G_A(A)) - A||
         self.loss_cycle_clean = self.criterionCycle(self.rec_clean, self.clean) * lambda_A
-        # Backward cycle loss || G_A(G_B(B)) - B||
-        self.loss_cycle_badweather[self.domain_badweather] = self.criterionCycle(self.rec_badweather, self.badweather) * lambda_B
         # combined loss and calculate gradients
-        self.loss_G = self.loss_G_clean + self.loss_G_badweather[self.domain_badweather] + self.loss_cycle_clean + \
-                      self.loss_cycle_badweather[self.domain_badweather] + self.loss_idt_clean + \
-                      self.loss_idt_badweather[self.domain_badweather]
+        self.loss_G = self.loss_G_clean + self.loss_cycle_clean + self.loss_idt_clean
         self.loss_G.backward()
 
     def optimize_parameters(self):
@@ -172,20 +144,18 @@ class CycleGANModel(BaseModel):
         # forward
         self.forward()
          # G_clean and G_badweather
-        self.set_requires_grad([self.netD_clean, self.netD_badweather[self.domain_badweather]], False)
+        # netG_badweather 不参与训练，所以将其require_grad属性置为false
+        no_grads_nets = [net for net in self.netG_badweather]
+        no_grads_nets.append(self.netD_clean)
+        self.set_requires_grad(no_grads_nets, False)
         self.netG_clean.zero_grad()
-        self.netG_badweather[self.domain_badweather].zero_grad()
         self.backward_G()
         self.optimizer_G_clean.step()
-        self.optimizer_G_badwheather[self.domain_badweather].step()
         # D_clean and D_badweather
-        self.set_requires_grad([self.netD_clean, self.netD_badweather[self.domain_badweather]], True)
+        self.set_requires_grad([self.netD_clean], True)
         self.netD_clean.zero_grad()
-        self.netD_badweather[self.domain_badweather].zero_grad()
         self.backward_D_Clean()
-        self.backward_D_Badweather()
         self.optimizer_D_clean.step()
-        self.optimizer_D_badwheather[self.domain_badweather].step()
 
     def test(self):
         with torch.no_grad():
