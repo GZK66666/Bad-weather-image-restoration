@@ -226,7 +226,7 @@ class BaseModel(ABC):
                     # 加载G_badweather
                     weather = ['smallrain', 'raindrop', 'snow']
                     for i in range(3):
-                        load_filename = 'pre_training_%s.pth' % weather[i]
+                        load_filename = 'pre_training_G_%s.pth' % weather[i]
                         load_path = os.path.join(self.pre_training_dir, load_filename)
                         if isinstance(net[i], torch.nn.DataParallel):
                             net[i] = net[i].module
@@ -238,24 +238,34 @@ class BaseModel(ABC):
                             self.__patch_instance_norm_state_dict(state_dict, net[i], key.split('.'))
                         net[i].load_state_dict(state_dict)
 
-
     def load_preTraining_networks(self):
-        # 加载预训练的生成器
-        nets = getattr(self, 'netG_badweather')
         weather = ['smallrain', 'raindrop', 'snow']
+        # 加载预训练的恶劣天气生成器和判别器
+        netGs = getattr(self, 'netG_badweather')
+        netDs = getattr(self, 'netD_badweather')
         for i in range(3):
-            load_filename = 'pre_training_%s.pth' % weather[i]
-            load_path = os.path.join(self.pre_training_dir, load_filename)
-            if isinstance(nets[i], torch.nn.DataParallel):
-                nets[i] = nets[i].module
-            print('loading the preTraining model from %s' % load_path)
-            state_dict = torch.load(load_path, map_location=str(self.device))
-            if hasattr(state_dict, '_metadata'):
-                del state_dict._metadata
-            for key in list(state_dict.keys()):  # need to copy keys here because we mutate in loop
-                self.__patch_instance_norm_state_dict(state_dict, nets[i], key.split('.'))
-            nets[i].load_state_dict(state_dict)
-
+            load_G_filename = 'pre_training_G_%s.pth' % weather[i]
+            load_G_path = os.path.join(self.pre_training_dir, load_G_filename)
+            load_D_filename = 'pre_training_D_%s.pth' % weather[i]
+            load_D_path = os.path.join(self.pre_training_dir, load_D_filename)
+            if isinstance(netGs[i], torch.nn.DataParallel):
+                netGs[i] = netGs[i].module
+            if isinstance(netDs[i], torch.nn.DataParallel):
+                netDs[i] = netDs[i].module
+            print('loading the preTraining generator from %s' % load_G_path)
+            print('loading the preTraining discriminator from %s' % load_D_path)
+            state_dict_G = torch.load(load_G_path, map_location=str(self.device))
+            state_dict_D = torch.load(load_D_path, map_location=str(self.device))
+            if hasattr(state_dict_G, '_metadata'):
+                del state_dict_G._metadata
+            if hasattr(state_dict_D, '_metadata'):
+                del state_dict_D._metadata
+            for key in list(state_dict_G.keys()):  # need to copy keys here because we mutate in loop
+                self.__patch_instance_norm_state_dict(state_dict_G, netGs[i], key.split('.'))
+            for key in list(state_dict_D.keys()):  # need to copy keys here because we mutate in loop
+                self.__patch_instance_norm_state_dict(state_dict_D, netDs[i], key.split('.'))
+            netGs[i].load_state_dict(state_dict_G)
+            netDs[i].load_state_dict(state_dict_D)
 
     def print_networks(self, verbose):
         """Print the total number of parameters in the network and (if verbose) network architecture

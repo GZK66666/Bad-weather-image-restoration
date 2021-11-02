@@ -32,12 +32,13 @@ class CycleGANModel(BaseModel):
         self.domain_badweather = None
 
         # specify the training losses you want to print out. The training/test scripts will call <BaseModel.get_current_losses>
-        self.loss_names = ['G_clean', 'D_clean', 'cycle_clean', 'idt_clean', 'G_badweather', 'D_badweather', 'cycle_badweather', 'idt_badweather']
+        self.loss_names = ['G_clean', 'D_clean', 'cycle_clean', 'idt_clean', 'cycle_badweather']
         # specify the images you want to save/display. The training/test scripts will call <BaseModel.get_current_visuals>
         visual_names_clean = ['clean', 'fake_badweather', 'rec_clean']
         visual_names_badweather = ['badweather', 'fake_clean', 'rec_badweather']
         if self.isTrain and self.opt.lambda_identity > 0.0:
                 visual_names_clean.append('idt_clean')
+                visual_names_badweather.append('idt_badweather')
 
         self.visual_names = visual_names_clean + visual_names_badweather  # combine visualizations for A and B
         # specify the models you want to save to the disk. The training/test scripts will call <BaseModel.save_networks> and <BaseModel.load_networks>.
@@ -58,6 +59,9 @@ class CycleGANModel(BaseModel):
             # netD_clean：干净背景图像判别器 netD_badweather：恶劣天气图像生成器（list, 有多少个恶劣天气图像域就有多少个对应的生成器）
             self.netD_clean = networks.define_D(opt.output_nc, opt.ndf, opt.netD,
                                                 opt.n_layers_D, opt.norm, opt.init_type, opt.init_gain, self.gpu_ids)
+            # 预训练网络
+            self.netD_badweather = [networks.define_D(opt.output_nc, opt.ndf, opt.netD, opt.n_layers_D, opt.norm,
+                                                      opt.init_type, opt.init_gain, self.gpu_ids) for _ in range(self.badweather_domains)]
 
         if self.isTrain:
             if opt.lambda_identity > 0.0:  # only works when input and output images have the same number of channels
@@ -73,6 +77,8 @@ class CycleGANModel(BaseModel):
             self.optimizer_D_clean = torch.optim.Adam(self.netD_clean.parameters(), lr=opt.lr, betas=(opt.beta1, 0.999))
             self.optimizers.append(self.optimizer_G_clean)
             self.optimizers.append(self.optimizer_D_clean)
+            # loss storage
+            self.loss_cycle_clean, self.loss_cycle_badweather = 0, [0] * self.badweather_domains
 
     def set_input(self, input):
         input_A = input['A']
@@ -127,6 +133,7 @@ class CycleGANModel(BaseModel):
         if lambda_idt > 0:
             # G_clean should be identity if clean is fed: ||G_clean(clean) - clean||
             self.idt_clean = self.netG_clean(self.clean)
+            self.idt_badweather = self.netG_badweather[self.domain_badweather](self.badweather)
             self.loss_idt_clean = self.criterionIdt(self.idt_clean, self.clean) * lambda_B * lambda_idt
         else:
             self.loss_idt_clean = 0
@@ -135,8 +142,10 @@ class CycleGANModel(BaseModel):
         self.loss_G_clean = self.criterionGAN(self.netD_clean(self.fake_clean), True)
         # Forward cycle loss || G_B(G_A(A)) - A||
         self.loss_cycle_clean = self.criterionCycle(self.rec_clean, self.clean) * lambda_A
+        self.loss_cycle_badweather[self.domain_badweather] = self.criterionCycle(self.rec_badweather, self.badweather) * lambda_B
         # combined loss and calculate gradients
-        self.loss_G = self.loss_G_clean + self.loss_cycle_clean + self.loss_idt_clean
+        self.loss_G = self.loss_G_clean + self.loss_cycle_clean + self.loss_cycle_badweather[self.domain_badweather] + \
+                      self.loss_idt_clean
         self.loss_G.backward()
 
     def optimize_parameters(self):
@@ -144,8 +153,11 @@ class CycleGANModel(BaseModel):
         # forward
         self.forward()
          # G_clean and G_badweather
-        # netG_badweather 不参与训练，所以将其require_grad属性置为false
-        no_grads_nets = [net for net in self.netG_badweather]
+        # netG_badweather、netD_badweather 不参与训练，所以将其require_grad属性置为false
+        no_grads_nets = []
+        for netG, netD in zip(self.netG_badweather, self.netD_badweather):
+            no_grads_nets.append(netG)
+            no_grads_nets.append(netD)
         no_grads_nets.append(self.netD_clean)
         self.set_requires_grad(no_grads_nets, False)
         self.netG_clean.zero_grad()
