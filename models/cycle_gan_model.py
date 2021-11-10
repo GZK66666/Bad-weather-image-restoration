@@ -3,6 +3,7 @@ import itertools
 from util.image_pool import ImagePool
 from .base_model import BaseModel
 from . import networks
+from models.GaussianSmoothLayer import *
 
 
 class CycleGANModel(BaseModel):
@@ -32,7 +33,7 @@ class CycleGANModel(BaseModel):
         self.domain_badweather = None
 
         # specify the training losses you want to print out. The training/test scripts will call <BaseModel.get_current_losses>
-        self.loss_names = ['G_clean', 'D_clean', 'cycle_clean', 'idt_clean', 'cycle_badweather']
+        self.loss_names = ['G_clean', 'D_clean', 'cycle_clean', 'idt_clean', 'BGM_clean', 'cycle_badweather']
         # specify the images you want to save/display. The training/test scripts will call <BaseModel.get_current_visuals>
         visual_names_clean = ['clean', 'fake_badweather', 'rec_clean']
         visual_names_badweather = ['badweather', 'fake_clean', 'rec_badweather']
@@ -58,10 +59,10 @@ class CycleGANModel(BaseModel):
         if self.isTrain:  # define discriminators
             # netD_clean：干净背景图像判别器 netD_badweather：恶劣天气图像生成器（list, 有多少个恶劣天气图像域就有多少个对应的生成器）
             self.netD_clean = networks.define_D(opt.output_nc, opt.ndf, opt.netD,
-                                                opt.n_layers_D, opt.norm, opt.init_type, opt.init_gain, self.gpu_ids)
-            # 预训练网络
-            self.netD_badweather = [networks.define_D(opt.output_nc, opt.ndf, opt.netD, opt.n_layers_D, opt.norm,
-                                                      opt.init_type, opt.init_gain, self.gpu_ids) for _ in range(self.badweather_domains)]
+                                                opt.n_layers_D, opt.norm, opt.init_type, opt.num_D, opt.use_IntermFeat_loss, opt.init_gain, self.gpu_ids)
+            # # 预训练网络
+            # self.netD_badweather = [networks.define_D(opt.output_nc, opt.ndf, opt.netD, opt.n_layers_D, opt.norm,
+            #                                           opt.init_type, opt.num_D, not opt.no_ganFeat_loss, opt.init_gain, self.gpu_ids) for _ in range(self.badweather_domains)]
 
         if self.isTrain:
             if opt.lambda_identity > 0.0:  # only works when input and output images have the same number of channels
@@ -69,9 +70,14 @@ class CycleGANModel(BaseModel):
             self.fake_clean_pool = ImagePool(opt.pool_size)
             self.fake_badweather_pools = [ImagePool(opt.pool_size) for _ in range(self.badweather_domains)]
             # define loss functions
-            self.criterionGAN = networks.GANLoss(opt.gan_mode).to(self.device)  # define GAN loss.
+            self.criterionGAN = networks.GANLoss(tensor=self.Tensor)  # define GAN loss.
             self.criterionCycle = torch.nn.L1Loss()
             self.criterionIdt = torch.nn.L1Loss()
+            # initialize the blur network
+            self.BGBlur_kernel = [5, 9, 15]
+            self.BlurNet = [GaussionSmoothLayer(3, k_size, 25).cuda(self.gpu_ids[0]) for k_size in self.BGBlur_kernel]
+            self.BlurWeight = [0.25, 0.5, 1.]
+            self.Gradient = GradientLoss(3, 3)
             # initialize optimizers; schedulers will be automatically created by function <BaseModel.setup>.
             self.optimizer_G_clean = torch.optim.Adam(self.netG_clean.parameters(), lr=opt.lr, betas=(opt.beta1, 0.999))
             self.optimizer_D_clean = torch.optim.Adam(self.netD_clean.parameters(), lr=opt.lr, betas=(opt.beta1, 0.999))
@@ -129,6 +135,7 @@ class CycleGANModel(BaseModel):
         lambda_idt = self.opt.lambda_identity
         lambda_A = self.opt.lambda_A
         lambda_B = self.opt.lambda_B
+        lambda_bgm = self.opt.lambda_BGM
         # Identity loss
         if lambda_idt > 0:
             # G_clean should be identity if clean is fed: ||G_clean(clean) - clean||
@@ -143,21 +150,27 @@ class CycleGANModel(BaseModel):
         # Forward cycle loss || G_B(G_A(A)) - A||
         self.loss_cycle_clean = self.criterionCycle(self.rec_clean, self.clean) * lambda_A
         self.loss_cycle_badweather[self.domain_badweather] = self.criterionCycle(self.rec_badweather, self.badweather) * lambda_B
+        # BGM loss
+        self.loss_BGM_clean =0
+        if lambda_bgm > 0:
+            for index, weight in enumerate(self.BlurWeight):
+                out_badweather = self.BlurNet[index](self.badweather)
+                out_fake_clean = self.BlurNet[index](self.fake_clean)
+                self.loss_BGM_clean += weight * torch.mean(torch.abs(out_fake_clean - out_badweather))
+            self.loss_BGM_clean *= lambda_bgm
         # combined loss and calculate gradients
         self.loss_G = self.loss_G_clean + self.loss_cycle_clean + self.loss_cycle_badweather[self.domain_badweather] + \
-                      self.loss_idt_clean
+                      self.loss_idt_clean + self.loss_BGM_clean
         self.loss_G.backward()
 
     def optimize_parameters(self):
         """Calculate losses, gradients, and update network weights; called in every training iteration"""
         # forward
         self.forward()
-         # G_clean and G_badweather
-        # netG_badweather、netD_badweather 不参与训练，所以将其require_grad属性置为false
+        # netG_badweather不参与训练，所以将其require_grad属性置为false
         no_grads_nets = []
-        for netG, netD in zip(self.netG_badweather, self.netD_badweather):
+        for netG in self.netG_badweather:
             no_grads_nets.append(netG)
-            no_grads_nets.append(netD)
         no_grads_nets.append(self.netD_clean)
         self.set_requires_grad(no_grads_nets, False)
         self.netG_clean.zero_grad()
