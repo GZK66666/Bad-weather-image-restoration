@@ -26,9 +26,10 @@ class UnalignedDataset(BaseDataset):
     def __getitem__(self, index):
         if not self.opt.isTrain:
             if self.opt.serial_test:
-                for d,s in enumerate(self.sizes):
+                for d, s in enumerate(self.sizes):
                     if index < s:
-                        DA = d; break
+                        DA = d;
+                        break
                     index -= s
                 index_A = index
             else:
@@ -38,23 +39,18 @@ class UnalignedDataset(BaseDataset):
             # Choose two of our domains to perform a pass on
             # DA - clean, DB - badweather
             DA = 0
+            DB = random.sample(range(len(self.dirs) - 1), 1)[0] + 1  # 1,2,3
             index_A = random.randint(0, self.sizes[DA] - 1)
 
         A_img, A_path = self.load_image(DA, index_A)
+        bundle = {'A': A_img, 'DA': DA, 'path': A_path}
 
         if self.opt.isTrain:
-            bundle1 = {'A': A_img, 'DA': DA, 'path': A_path}
-            bundle2 = {'A': A_img, 'DA': DA, 'path': A_path}
-            bundle3 = {'A': A_img, 'DA': DA, 'path': A_path}
-            bundle = [bundle1, bundle2, bundle3]
-            for i in range(self.opt.badweather_domains): # 0,1,2 代表bad weather的三个域
-                index_B = random.randint(0, self.sizes[i + 1] - 1)
-                B_img, _ = self.load_image(i + 1, index_B)
-                bundle[i].update( {'B': B_img, 'DB': i + 1} )
-            return bundle
-        else:
-            bundle = {'A' : A_img, 'DA' : DA, 'path' : A_path}
-            return bundle
+            index_B = random.randint(0, self.sizes[DB] - 1)
+            B_img, _ = self.load_image(DB, index_B)
+            bundle.update({'B': B_img, 'DB': DB})
+
+        return bundle
 
     def __len__(self):
         if self.opt.isTrain:

@@ -97,7 +97,7 @@ class BaseModel(ABC):
         """Make models eval mode during test time"""
         for name in self.model_names:
             if isinstance(name, str):
-                net = getattr(self, 'net' + name)
+                net = getattr(self, name)
                 net.eval()
 
     def test(self):
@@ -163,23 +163,22 @@ class BaseModel(ABC):
         """
         for name in self.model_names:
             if isinstance(name, str):
-                net = getattr(self, 'net' + name)
+                net = getattr(self, name)
                 if isinstance(net, list):
                         for i in range(len(net)):
-                            save_filename = '%s_net_%s' % (epoch, name)
+                            save_filename = '%s_%s' % (epoch, name)
                             save_filename += str(i) + '.pth'
                             save_path = os.path.join(self.save_dir, save_filename)
                             if len(self.gpu_ids) > 0 and torch.cuda.is_available():
-                                torch.save(net[i].module.cpu().state_dict(), save_path)
+                                torch.save(net[i].cpu().state_dict(), save_path)
                                 net[i].cuda(self.gpu_ids[0])
                             else:
                                 torch.save(net[i].cpu().state_dict(), save_path)
                 else:
-                    save_filename = '%s_net_%s' % (epoch, name)
-                    save_filename += '.pth'
+                    save_filename = '%s_%s.pth' % (epoch, name)
                     save_path = os.path.join(self.save_dir, save_filename)
                     if len(self.gpu_ids) > 0 and torch.cuda.is_available():
-                        torch.save(net.module.cpu().state_dict(), save_path)
+                        torch.save(net.cpu().state_dict(), save_path)
                         net.cuda(self.gpu_ids[0])
                     else:
                         torch.save(net.cpu().state_dict(), save_path)
@@ -206,10 +205,10 @@ class BaseModel(ABC):
         """
         for name in self.model_names:
             if isinstance(name, str):
-                net = getattr(self, 'net' + name)
+                net = getattr(self, name)
                 if isinstance(net, list):
                     for i in range(len(net)):
-                        load_filename = '%s_net_%s%s.pth' % (epoch, name, str(i))
+                        load_filename = '%s_%s%s.pth' % (epoch, name, str(i))
                         load_path = os.path.join(self.save_dir, load_filename)
                         if isinstance(net[i], torch.nn.DataParallel):
                             net[i] = net[i].module
@@ -221,7 +220,7 @@ class BaseModel(ABC):
                             self.__patch_instance_norm_state_dict(state_dict, net[i], key.split('.'))
                         net[i].load_state_dict(state_dict)
                 else:
-                    load_filename = '%s_net_%s.pth' % (epoch, name)
+                    load_filename = '%s_%s.pth' % (epoch, name)
                     load_path = os.path.join(self.save_dir, load_filename)
                     if isinstance(net, torch.nn.DataParallel):
                         net = net.module
@@ -246,7 +245,7 @@ class BaseModel(ABC):
         print('---------- Networks initialized -------------')
         for name in self.model_names:
             if isinstance(name, str):
-                net = getattr(self, 'net' + name)
+                net = getattr(self, name)
                 num_params = 0
                 if isinstance(net, list):
                     for i in range(len(net)):
