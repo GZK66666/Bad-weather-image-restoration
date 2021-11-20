@@ -667,7 +667,7 @@ class Dis_content(nn.Module):
         out = self.model(x)
         out = out.view(1, 4)
         # 使用softmax
-        out = nn.functional.softmax(out, dim=1)
+        # out = nn.functional.softmax(out, dim=1)
         return out
 
 ##################################################################################
