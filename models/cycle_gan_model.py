@@ -78,6 +78,7 @@ class CycleGANModel(BaseModel):
             self.criterionGAN = networks.GANLoss(opt.gan_mode).to(self.device)  # define GAN loss.
             self.criterionCycle = torch.nn.L1Loss()
             self.criterionIdt = torch.nn.L1Loss()
+            self.criterionCls = torch.nn.BCEWithLogitsLoss()
 
             # initialize optimizers; schedulers will be automatically created by function <BaseModel.setup>.
             self.optimizer_encBackground_clean = torch.optim.Adam(self.encBackground_clean.parameters(), lr=opt.lr, betas=(opt.beta1, 0.999))
@@ -201,8 +202,8 @@ class CycleGANModel(BaseModel):
         # domain adversarial loss
         pred_cls_clean = self.netD_background(self.clean_background)
         pred_cls_badweather = self.netD_background(self.badweather_background)
-        self.loss_D_background = (self.compute_crossentropy_byOnehot_vector(pred_cls_clean, self.label_clean) +
-                                  self.compute_crossentropy_byOnehot_vector(pred_cls_badweather, self.label_badweather)) * self.opt.lambda_domainAdversarial
+        self.loss_D_background = (self.criterionCls(pred_cls_clean, self.label_clean) +
+                                  self.criterionCls(pred_cls_badweather, self.label_badweather)) * self.opt.lambda_domainAdversarial
         self.loss_D_background.backward(retain_graph=True)
         # 修剪梯度 LIR代码中有的，可以考虑是否保留
         torch.nn.utils.clip_grad_norm_(self.netD_background.parameters(), 5)
@@ -218,8 +219,7 @@ class CycleGANModel(BaseModel):
 
         pred_cls_clean = self.netD_background(self.clean_background)
         pred_cls_badweather = self.netD_background(self.badweather_background)
-        self.loss_D_background = (self.compute_crossentropy_byOnehot_vector(pred_cls_clean, self.label_clean) +
-                                  self.compute_crossentropy_byOnehot_vector(pred_cls_badweather, self.label_badweather)) * self.opt.lambda_domainAdversarial
+        self.loss_D_background = (self.criterionCls(pred_cls_clean, self.label_clean) + self.criterionCls(pred_cls_badweather, self.label_badweather)) * self.opt.lambda_domainAdversarial
         self.loss_D_background.backward(retain_graph=True)
         # 修剪梯度 LIR代码中有的，可以考虑是否保留
         torch.nn.utils.clip_grad_norm_(self.netD_background.parameters(), 5)
@@ -263,9 +263,9 @@ class CycleGANModel(BaseModel):
         # domain adversarial loss
         pred_cls_clean = self.netD_background(self.clean_background)
         pred_cls_badweather = self.netD_background(self.badweather_background)
-        # target label = (1 - ground truth label) / 3，用来迷惑判别器
-        self.loss_G_background = (self.compute_crossentropy_byOnehot_vector(pred_cls_clean, (1 - self.label_clean) / 3) +
-                                  self.compute_crossentropy_byOnehot_vector(pred_cls_badweather, (1 - self.label_badweather) / 3)) * lambda_domainAdversarial
+        # target label = (1 - ground truth label)，用来迷惑判别器
+        self.loss_G_background = (self.criterionCls(pred_cls_clean, 1 - self.label_clean) +
+                                  self.criterionCls(pred_cls_badweather, 1 - self.label_badweather)) * lambda_domainAdversarial
 
         # latent regression loss
         self.loss_latent_regression_background = (torch.mean(torch.abs(self.clean_background - self.fake_badweather_background))
@@ -310,12 +310,6 @@ class CycleGANModel(BaseModel):
         mu_2 = torch.pow(mu, 2)
         encoding_loss = torch.mean(mu_2)
         return encoding_loss
-
-    def compute_crossentropy_byOnehot_vector(self, input, target):
-        """由于torch内置的crossentropy不能接受FloatTensor类型的target向量（如[0.25, 0.25, 0.25, 0.25]），因此重写一个crossentropy函数"""
-        log_input = F.log_softmax(input, dim=1)
-        loss = -torch.sum(log_input * target)
-        return loss
 
     def test(self):
         with torch.no_grad():
