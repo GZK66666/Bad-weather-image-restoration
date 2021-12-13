@@ -71,8 +71,8 @@ class CycleGANModel(BaseModel):
             self.fake_badweather_pools = [ImagePool(opt.pool_size) for _ in range(self.badweather_domains)]
             # define loss functions
             self.criterionGAN = networks.GANLoss(tensor=self.Tensor)  # define GAN loss.
-            self.criterionCycle = torch.nn.L1Loss()
-            self.criterionIdt = torch.nn.L1Loss()
+            self.criterionCycle = networks.L1_Charbonnier_loss()
+            self.criterionIdt = networks.L1_Charbonnier_loss()
             # initialize the blur network
             self.BGBlur_kernel = [5, 9, 15]
             self.BlurNet = [GaussionSmoothLayer(3, k_size, 25).cuda(self.gpu_ids[0]) for k_size in self.BGBlur_kernel]
