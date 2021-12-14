@@ -54,11 +54,11 @@ class CycleGANModel(BaseModel):
         # define networks (both Generators and discriminators)
         # clean domain：一个背景encoder和一个背景decoder
         # badweather domain：所有天气图像域共用一个背景encoder，不同的天气特征encoder和decoder
-        self.encBackground_clean = networks.ContentEncoder(n_downsample=2, n_res=4, input_dim=opt.input_nc, dim=64, norm='bn', activ='relu', pad_type='reflect').cuda(self.gpu_ids[0])
-        self.decBackground_clean = networks.Decoder(n_upsample=2, n_res=4, dim=self.encBackground_clean.output_dim, output_dim=opt.input_nc, res_norm='bn', activ='relu', pad_type='reflect').cuda(self.gpu_ids[0])
-        self.encBackground_badweather = networks.ContentEncoder(n_downsample=2, n_res=4, input_dim=opt.input_nc, dim=64, norm='bn', activ='relu', pad_type='reflect').cuda(self.gpu_ids[0])
-        self.encWeather_badweather = [networks.NoiseEncoder(n_downsample=2, input_dim=opt.input_nc, dim=64, style_dim=self.encBackground_badweather.output_dim, norm='bn', activ='relu', pad_type='reflect').cuda(self.gpu_ids[0]) for _ in range(self.badweather_domains)]
-        self.decBadweather_badweather = [networks.Decoder(n_upsample=2, n_res=4, dim=2 * self.encBackground_badweather.output_dim, output_dim=opt.input_nc, res_norm='bn', activ='relu', pad_type='reflect').cuda(self.gpu_ids[0]) for _ in range(self.badweather_domains)]
+        self.encBackground_clean = networks.ContentEncoder(n_downsample=opt.n_downsamples, n_res=opt.n_res, input_dim=opt.input_nc, dim=64, norm='bn', activ='relu', pad_type='reflect').cuda(self.gpu_ids[0])
+        self.decBackground_clean = networks.Decoder(n_upsample=opt.n_downsamples, n_res=opt.n_res, dim=self.encBackground_clean.output_dim, output_dim=opt.input_nc, res_norm='bn', activ='relu', pad_type='reflect').cuda(self.gpu_ids[0])
+        self.encBackground_badweather = networks.ContentEncoder(n_downsample=opt.n_downsamples, n_res=opt.n_res, input_dim=opt.input_nc, dim=64, norm='bn', activ='relu', pad_type='reflect').cuda(self.gpu_ids[0])
+        self.encWeather_badweather = [networks.NoiseEncoder(n_downsample=opt.n_downsamples, input_dim=opt.input_nc, dim=64, style_dim=self.encBackground_badweather.output_dim, norm='bn', activ='relu', pad_type='reflect').cuda(self.gpu_ids[0]) for _ in range(self.badweather_domains)]
+        self.decBadweather_badweather = [networks.Decoder(n_upsample=opt.n_downsamples, n_res=opt.n_res, dim=2 * self.encBackground_badweather.output_dim, output_dim=opt.input_nc, res_norm='bn', activ='relu', pad_type='reflect').cuda(self.gpu_ids[0]) for _ in range(self.badweather_domains)]
 
         if self.isTrain:  # define discriminators
             # netD_clean：干净背景图像判别器 netD_badweather：恶劣天气图像生成器（list, 有多少个恶劣天气图像域就有多少个对应的生成器） netD_background：域对抗判别器
